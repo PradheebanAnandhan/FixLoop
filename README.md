@@ -1,8 +1,8 @@
 # FixLoop
 
-**An issue-to-fix coding agent that proves its patches by running the tests.**
+**An issue-to-fix coding agent whose patches are accepted only by an independent verifier, never on the model's say-so.**
 
-Give FixLoop a GitHub issue URL for a Python project. It clones the repo, writes a failing test that reproduces the bug, then iterates on a fix in a sandbox until the test passes. It finishes with a diff and a PR description that includes before/after test output as evidence.
+Give FixLoop a GitHub issue URL for a Python project. It clones the repo, writes a failing test that reproduces the bug, and proposes a fix. A separate, deterministic verifier then runs the patch in a fresh sandbox and makes the final accept/reject call. The agent iterates on the verifier's rejection reasons, and a passing run ends with a diff and a PR description that includes the verifier's evidence.
 
 Built for the [Nebius x NVIDIA Global AI Hackathon](https://nebiusglobalaihackathon.devpost.com/) — **Coding and Agentic Engineering Track**.
 
@@ -27,9 +27,24 @@ GitHub issue URL
 1. Intake        clone repo, install dependencies in a sandbox
 2. Localize      search the codebase for the files likely involved
 3. Reproduce     write a failing test, confirm it fails for the right reason
-4. Fix           propose a patch → run tests → read failures → retry (max N)
-5. Deliver       diff + PR description with before/after test evidence
+4. Fix           propose a patch (source files only) → submit to the verifier
+5. Verify        independent verifier accepts or rejects → on reject, retry with its reasons (max N)
+6. Deliver       diff + PR description with the verifier's before/after evidence
 ```
+
+### The independent verifier
+
+The model never gets to declare its own fix correct. The final verdict comes from deterministic code (no LLM involved) that runs in its own fresh container, against a clean checkout of the repo:
+
+1. **Baseline run.** The original code is tested first. The reproducing test must **fail**, and the failures of the existing suite are recorded.
+2. **Patch policy.** The patch is rejected outright if it touches test files, `conftest.py`, pytest or tox config, or CI files, adds skip/xfail markers, or exceeds a size limit.
+3. **Patched run.** The verifier applies the patch itself. The reproducing test is stored outside the agent's reach and injected by the verifier. It must now **pass**.
+4. **Regression check.** The existing suite is rerun and compared with the baseline. Any newly failing test rejects the patch.
+5. **Isolation.** Every run uses no network, a read-only mount where possible, a cleared environment, and a hard timeout.
+
+A rejection returns a short reason (for example "modified a test file" or "regression in `tests/test_x.py`") that the agent uses on its next attempt. The verdict, reasons, and test output are saved as evidence and included in the PR description.
+
+**Stretch goal:** a held-out check, where a separate Nano call writes a few extra edge-case tests the fixer never saw, and the patch must pass those as well. This catches fixes that only special-case the reproducing test.
 
 ### Where each Nemotron model is used
 
@@ -71,7 +86,7 @@ The full list of issues used and per-issue outcomes (including failures) is in [
 
 - Python repositories that use `pytest` only.
 - Targets small, well-defined bugs with a clear reproduction path, not large refactors or feature requests.
-- Patches are verified against the repo's own tests plus the generated reproducing test. Passing tests do not guarantee a correct fix, so review every PR before merging.
+- The verifier checks the repo's own tests plus the generated reproducing test, and blocks common ways of gaming them. Passing tests still do not guarantee a correct fix, so review every PR before merging.
 - Code runs in a network-isolated container with a timeout.
 
 ---
@@ -128,10 +143,25 @@ To launch the web UI that shows the agent's steps live:
 python -m fixloop.web
 ```
 
+The verifier can also be run on its own, for example to check a hand-written patch:
+
+```bash
+python -m verifier build-image --repo path/to/repo --commit <sha> --tag fixloop/repo:base
+python -m verifier check --repo path/to/repo --commit <sha> --image fixloop/repo:base \
+    --repro tests/test_fixloop_repro.py=./repro_test.py --patch fix.diff --evidence runs/demo
+```
+
 ### Run the evaluation
 
 ```bash
 python eval/run_eval.py
+```
+
+### Run FixLoop's own tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest            # Docker integration tests are skipped if no Docker daemon is running
 ```
 
 ---
@@ -140,15 +170,18 @@ python eval/run_eval.py
 
 - **Reasoning models need headroom.** The Nemotron models on Token Factory produce a reasoning trace before the answer. FixLoop sets a generous `max_tokens` and retries when a response comes back with empty content.
 - **Sandboxing.** Each run executes in a fresh Docker container with networking disabled and a hard timeout.
+- **Separation of roles.** The fixer agent and the verifier share no code path at decision time. The agent can read the verifier's rejection reasons but cannot modify the verifier, the stored reproducing test, or the evidence it writes.
 - **Bounded retries.** The fix loop stops after `MAX_FIX_ATTEMPTS` and reports what it tried instead of looping forever.
 
 ## Project structure
 
 ```
-fixloop/
-├── fixloop/          # agent loop, model client, sandbox runner
+FixLoop/
+├── fixloop/          # agent loop and Nemotron model client
+├── verifier/         # independent, deterministic accept/reject and Docker sandbox (no LLM calls, stdlib only)
 ├── eval/             # issue set, runner, results
 ├── scripts/          # utilities such as check_models.py
+├── tests/            # FixLoop's own test suite
 ├── .env.example
 ├── LICENSE
 └── README.md
