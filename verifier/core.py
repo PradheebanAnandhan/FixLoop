@@ -175,6 +175,7 @@ class Baseline:
     targeted: RunSummary | None
     suite: RunSummary | None
     evidence_dir: Path
+    heldout_run: RunSummary | None = None
 
     def feedback(self) -> str:
         return _feedback(self.reasons)
@@ -187,6 +188,7 @@ class Baseline:
             "repro_test": {"path": self.repro.path, "sha256": self.repro.sha256},
             "heldout_tests": [{"path": t.path, "sha256": t.sha256} for t in self.heldout],
             "targeted_run": self.targeted.to_dict() if self.targeted else None,
+            "heldout_run": self.heldout_run.to_dict() if self.heldout_run else None,
             "suite_run": self.suite.to_dict() if self.suite else None,
             "existing_failures": sorted(self.suite.failing()) if self.suite else [],
         }
@@ -263,6 +265,7 @@ class Verifier:
         self.work_root = Path(work_root) if work_root else None
         self.baseline: Baseline | None = None
         self._baseline_attempts = 0
+        self._repro_checks = 0
         self.attempts = 0
 
         # Private bare mirror: later changes to the source repo (e.g. the agent's
@@ -329,13 +332,30 @@ class Verifier:
         if self.baseline and self.baseline.ok:
             raise VerifierError("baseline already established; the reproducing test is frozen")
         self._baseline_attempts += 1
-        out = self.evidence_dir / f"baseline-{self._baseline_attempts:02d}"
+        baseline = self._baseline(repro, heldout, self.evidence_dir / f"baseline-{self._baseline_attempts:02d}",
+                                  run_suite=True)
+        self.baseline = baseline
+        return baseline
+
+    def try_reproduction(self, repro: TestFile) -> Baseline:
+        """Run only the reproducing-test checks on clean code, without freezing anything.
+
+        Lets the agent vet a candidate test (for example with a model judging the
+        failure) before committing to it with `establish_baseline`.
+        """
+        if self.baseline and self.baseline.ok:
+            raise VerifierError("baseline already established; the reproducing test is frozen")
+        self._repro_checks += 1
+        return self._baseline(repro, (), self.evidence_dir / f"repro-check-{self._repro_checks:02d}",
+                              run_suite=False)
+
+    def _baseline(self, repro: TestFile, heldout: Sequence[TestFile], out: Path, *, run_suite: bool) -> Baseline:
         out.mkdir(parents=True, exist_ok=True)
         heldout = list(heldout)
         injected = [repro, *heldout]
 
         reasons = self._check_test_files(repro, heldout)
-        targeted = suite = None
+        targeted = suite = heldout_run = None
         if not reasons:
             checkout = self._fresh_checkout()
             try:
@@ -348,11 +368,16 @@ class Verifier:
                     ))
                 else:
                     self._inject(checkout, injected)
-                    targeted = self._run(checkout, "targeted", self._targeted_args(injected),
+                    # The reproducing test and held-out tests run separately, so no
+                    # log or report for the reproducing test ever mentions held-out tests.
+                    targeted = self._run(checkout, "targeted", self._targeted_args([repro]),
                                          self.config.targeted_timeout, out)
                     reasons += self._judge_baseline_repro(targeted, repro)
-                    heldout = self._valid_heldout(targeted, heldout)
-                    if not reasons:
+                    if heldout and not reasons:
+                        heldout_run = self._run(checkout, "heldout", self._targeted_args(heldout),
+                                                self.config.targeted_timeout, out)
+                        heldout = self._valid_heldout(heldout_run, heldout)
+                    if not reasons and run_suite:
                         suite = self._run(checkout, "suite", self._suite_args(injected),
                                           self.config.suite_timeout, out)
                         reasons += self._judge_baseline_suite(suite)
@@ -361,14 +386,13 @@ class Verifier:
 
         baseline = Baseline(
             ok=not reasons, reasons=reasons, commit=self.commit, repro=repro, heldout=heldout,
-            targeted=targeted, suite=suite, evidence_dir=out,
+            targeted=targeted, suite=suite, evidence_dir=out, heldout_run=heldout_run,
         )
         frozen = out / "frozen"
         for t in (repro, *heldout):
             (frozen / t.path).parent.mkdir(parents=True, exist_ok=True)
             (frozen / t.path).write_text(t.content)
         (out / "baseline.json").write_text(json.dumps(baseline.to_dict(), indent=2))
-        self.baseline = baseline
         return baseline
 
     @staticmethod
@@ -475,15 +499,22 @@ class Verifier:
             self._inject(checkout, injected)
 
             # (3) reproducing test (and held-out tests) must now pass
-            targeted = self._run(checkout, "targeted", self._targeted_args(injected),
+            targeted = self._run(checkout, "targeted", self._targeted_args([base.repro]),
                                  self.config.targeted_timeout, out)
             verdict.runs.append(targeted)
             verdict.reasons += self._judge_patched_repro(targeted)
-            verdict.heldout, heldout_reasons = self._judge_heldout(targeted)
-            if self.config.heldout_required:
-                verdict.reasons += heldout_reasons
             if verdict.reasons and self.config.fail_fast:
                 return verdict
+
+            if base.heldout:
+                heldout_run = self._run(checkout, "heldout", self._targeted_args(base.heldout),
+                                        self.config.targeted_timeout, out)
+                verdict.runs.append(heldout_run)
+                verdict.heldout, heldout_reasons = self._judge_heldout(heldout_run)
+                if self.config.heldout_required:
+                    verdict.reasons += heldout_reasons
+                if verdict.reasons and self.config.fail_fast:
+                    return verdict
 
             # (4) existing suite: no new failures versus baseline
             suite = self._run(checkout, "suite", self._suite_args(injected), self.config.suite_timeout, out)
@@ -529,11 +560,16 @@ class Verifier:
 
     def _judge_heldout(self, run: RunSummary) -> tuple[dict[str, str], list[Reason]]:
         results: dict[str, str] = {}
+        if run.timed_out or not run.has_report:
+            results = {t.path: "timeout" if run.timed_out else "no_report" for t in self.baseline.heldout}
         for t in self.baseline.heldout:
-            for nodeid, entry in run.in_file(t.path).items():
+            tests = run.in_file(t.path)
+            for nodeid, entry in tests.items():
                 results[nodeid] = entry["outcome"]
             if t.path in run.collect_errors:
                 results[t.path] = "collection_error"
+            elif not tests and t.path not in results:
+                results[t.path] = "not_run"
         failing = [n for n, o in results.items() if o != "passed"]
         if not failing:
             return results, []

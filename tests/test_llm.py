@@ -85,3 +85,15 @@ def test_ask_includes_system_prompt():
         {"role": "user", "content": "question"},
     ]
     assert fake.calls[0]["temperature"] == 0.6
+
+
+def test_inline_think_block_is_split_from_answer():
+    llm, _ = make_client([response("<think>\nlet me see\n</think>\n\nfinal answer")])
+    c = llm.chat("fast", [{"role": "user", "content": "hi"}])
+    assert (c.content, c.reasoning) == ("final answer", "let me see")
+
+
+def test_unclosed_think_block_counts_as_empty():
+    llm, fake = make_client([response("<think>still thinking", finish_reason="length"), response("ok")])
+    assert llm.ask("fast", "hi") == "ok"
+    assert [call["max_tokens"] for call in fake.calls] == [1000, 2000]

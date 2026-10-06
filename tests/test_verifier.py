@@ -195,3 +195,14 @@ def test_size_policy_is_configurable(tmp_path, repo, sandbox):
     assert v.establish_baseline(REPRO_TEST).ok
     assert codes(v.verify(make_patch(repo[0], {"calc.py": FIXED_CALC}))) == ["patch_too_large"]
     v.close()
+
+
+def test_try_reproduction_checks_without_freezing(verifier):
+    bad = verifier.try_reproduction(TestFile("tests/test_fixloop_repro.py", "def test_x():\n    pass\n"))
+    assert codes(bad) == ["repro_passes_on_baseline"]
+    good = verifier.try_reproduction(REPRO_TEST)
+    assert good.ok and good.suite is None
+    assert verifier.baseline is None
+    assert verifier.establish_baseline(REPRO_TEST).ok  # can still be established afterwards
+    with pytest.raises(VerifierError):
+        verifier.try_reproduction(REPRO_TEST)

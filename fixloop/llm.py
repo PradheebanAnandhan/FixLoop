@@ -63,6 +63,16 @@ class UsageLog:
         return totals
 
 
+def _split_think(content: str) -> tuple[str, str | None]:
+    """Some deployments inline the trace as <think>...</think> before the answer."""
+    if "</think>" in content:
+        trace, _, answer = content.rpartition("</think>")
+        return answer.strip(), trace.replace("<think>", "", 1).strip()
+    if content.lstrip().startswith("<think>"):
+        return "", content  # trace never closed: the budget ran out mid-thought
+    return content, None
+
+
 def _reasoning_text(message: Any) -> str | None:
     # Providers expose the trace under different non-standard field names.
     for name in ("reasoning_content", "reasoning"):
@@ -116,7 +126,7 @@ class LLMClient:
 
             choice = response.choices[0] if response.choices else None
             message = choice.message if choice else None
-            content = ((message.content if message else None) or "").strip()
+            content, inline_trace = _split_think(((message.content if message else None) or "").strip())
             last_finish = choice.finish_reason if choice else None
 
             if content:
@@ -125,7 +135,7 @@ class LLMClient:
                     role=role,
                     model=model,
                     content=content,
-                    reasoning=_reasoning_text(message),
+                    reasoning=_reasoning_text(message) or inline_trace,
                     finish_reason=last_finish,
                     prompt_tokens=usage.prompt_tokens if usage else 0,
                     completion_tokens=usage.completion_tokens if usage else 0,

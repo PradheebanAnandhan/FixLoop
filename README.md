@@ -50,9 +50,11 @@ A rejection returns a short reason (for example "modified a test file" or "regre
 
 | Step | Model | Why |
 |---|---|---|
-| Localize, summarize, triage | `NVIDIA-Nemotron-3-Nano-30B-A3B` | Fast, cheap calls that run many times per issue |
-| Mid-weight tasks | `nemotron-3-super-120b-a12b` | Balance of speed and capability |
+| Summarize the issue, localize files, write held-out edge-case tests | `NVIDIA-Nemotron-3-Nano-30B-A3B` | Fast, cheap calls that run many times per issue |
+| Judge whether the failing test reproduces the reported bug, write the PR summary | `nemotron-3-super-120b-a12b` | Balance of speed and capability |
 | Reproduce and Fix | `Nemotron-3-Ultra-550b-a55b` | Serious reasoning for the hard steps |
+
+The verifier makes no model calls at all.
 
 All models are served through **Nebius Token Factory** via its OpenAI-compatible API. Model IDs are configurable in `.env` (see below). Confirm exact IDs against your account's `/v1/models` listing.
 
@@ -136,6 +138,20 @@ python scripts/check_models.py
 ```bash
 python -m fixloop https://github.com/<owner>/<repo>/issues/<number>
 ```
+
+Useful options: `--commit <sha>` (fix against a specific commit), `--repo <path-or-url>` (clone from somewhere other than github.com), `--issue-file issue.json` (offline, no GitHub API call), `--max-attempts N`, `--heldout gate|report|off`.
+
+Each run writes to `runs/<owner>-<repo>-<n>-<timestamp>/`:
+
+| File | Contents |
+|---|---|
+| `PR.md` | PR description with the verifier's before/after evidence |
+| `fix.diff` | The verified source-only patch |
+| `pr.diff` | The fix plus the new reproducing test, ready to apply |
+| `REPORT.md` | Every fix attempt with the verifier's feedback |
+| `result.json` | Status, attempts, per-step timings, tokens and cost per model |
+| `trace.jsonl` | Every agent event (what the web UI streams) |
+| `evidence/` | Verifier logs, per-test reports and verdicts for each run |
 
 To launch the web UI that shows the agent's steps live:
 

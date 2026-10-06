@@ -198,7 +198,11 @@ RUN --mount=type=secret,id=ca,required=false set -e; \\
              requirements/testing.txt; do \\
         if [ -f "$f" ]; then python -m pip install -r "$f" || echo "warning: could not install $f"; fi; \\
     done; \\
-    for g in test tests dev; do python -m pip install --group "$g" >/dev/null 2>&1 || true; done; \\
+    groups=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')).get('dependency-groups',{{}}); print(' '.join(g for g in ('test','tests','testing') if g in d))" 2>/dev/null || true); \\
+    if [ -n "$groups" ]; then \\
+        python -m pip install -q --upgrade "pip>=25.1"; \\
+        for g in $groups; do python -m pip install --group "$g"; done; \\
+    fi; \\
     python -m pytest --version
 """
 

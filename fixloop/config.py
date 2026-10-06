@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +37,13 @@ class Settings:
     max_tokens: int
     max_tokens_cap: int
     request_timeout: float
+    max_repro_attempts: int = 3
+    heldout_mode: str = "report"           # "gate", "report" or "off"
+    sandbox_base_image: str = "python:3.12-slim"
+    runs_dir: Path = REPO_ROOT / "runs"
+    github_token: str | None = None
+    # USD per 1M (input, output) tokens per role, if configured; used for cost reports.
+    prices: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def model_for(self, role: str) -> str:
         try:
@@ -79,7 +86,29 @@ def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
         max_tokens=max_tokens,
         max_tokens_cap=max(_int_env("LLM_MAX_TOKENS_CAP", 65536), max_tokens),
         request_timeout=float(_int_env("LLM_TIMEOUT_SECONDS", 600)),
+        max_repro_attempts=_int_env("MAX_REPRO_ATTEMPTS", 3),
+        heldout_mode=os.environ.get("HELDOUT_MODE", "report").strip() or "report",
+        sandbox_base_image=os.environ.get("SANDBOX_BASE_IMAGE", "").strip() or "python:3.12-slim",
+        runs_dir=Path(os.environ.get("RUNS_DIR", "").strip() or REPO_ROOT / "runs"),
+        github_token=os.environ.get("GITHUB_TOKEN", "").strip() or None,
+        prices=_prices(),
     )
     if settings.max_fix_attempts < 1:
         raise ConfigError("MAX_FIX_ATTEMPTS must be at least 1")
+    if settings.heldout_mode not in ("gate", "report", "off"):
+        raise ConfigError("HELDOUT_MODE must be one of: gate, report, off")
     return settings
+
+
+def _prices() -> dict[str, tuple[float, float]]:
+    prices = {}
+    for role, var in ROLE_ENV_VARS.items():
+        raw = os.environ.get(f"{var}_PRICE", "").strip()
+        if not raw:
+            continue
+        try:
+            inp, out = (float(x) for x in raw.split(","))
+        except ValueError:
+            raise ConfigError(f"{var}_PRICE must look like '0.10,0.40' (USD per 1M input,output tokens)") from None
+        prices[role] = (inp, out)
+    return prices
