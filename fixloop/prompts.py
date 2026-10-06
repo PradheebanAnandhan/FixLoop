@@ -25,10 +25,11 @@ def file_block(path: str, content: str) -> str:
 
 def files_context(repo: Path, paths: list[str], budget: int = FILE_BUDGET_CHARS) -> str:
     blocks, used = [], 0
+    per_file = min(PER_FILE_CHARS, budget)
     for path in paths:
         content = repo_mod.read(repo, path)
-        if len(content) > PER_FILE_CHARS:
-            content = content[:PER_FILE_CHARS] + f"\n# [... truncated: file is {len(content)} chars ...]"
+        if len(content) > per_file:
+            content = content[:per_file] + f"\n# [... truncated: file is {len(content)} chars ...]"
         if used + len(content) > budget:
             blocks.append(f'<file path="{path}">[omitted: context budget reached; ask with read_file]</file>')
             continue

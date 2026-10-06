@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import openai
 from openai import OpenAI
 
 from .config import Settings
@@ -26,6 +27,12 @@ log = logging.getLogger(__name__)
 
 class EmptyResponseError(RuntimeError):
     """The model returned no answer content after all retries."""
+
+
+# Phrases providers use when max_tokens is above what the model allows.
+_TOKEN_LIMIT_HINTS = ("max_tokens", "max_completion_tokens", "maximum context", "context length",
+                      "context_length", "too many tokens", "max_new_tokens")
+MIN_BUDGET = 1024
 
 
 @dataclass
@@ -92,16 +99,41 @@ class LLMClient:
         retry_delay_s: float = 2.0,
     ) -> None:
         self.settings = settings
-        # The SDK already retries connection errors, 429s and 5xx with backoff.
+        # The SDK already retries connection errors, 429s (honoring Retry-After) and 5xx.
         self.client = client or OpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
             timeout=settings.request_timeout,
-            max_retries=4,
+            max_retries=settings.max_retries,
         )
         self.max_empty_retries = max_empty_retries
         self.retry_delay_s = retry_delay_s
         self.usage = UsageLog()
+        self._last_request = 0.0
+
+    def _pace(self) -> None:
+        """Keep at least `min_interval_s` between requests (free-tier rate limits)."""
+        wait = self._last_request + self.settings.min_interval_s - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request = time.monotonic()
+
+    def _create(self, model: str, messages, budget: int, params: dict):
+        """One request; if the provider rejects the token budget as too large, shrink it."""
+        while True:
+            self._pace()
+            start = time.monotonic()
+            try:
+                response = self.client.chat.completions.create(
+                    model=model, messages=messages, max_tokens=budget, **params
+                )
+                return response, budget, time.monotonic() - start
+            except openai.BadRequestError as e:
+                text = str(e).lower()
+                if budget <= MIN_BUDGET or not any(h in text for h in _TOKEN_LIMIT_HINTS):
+                    raise
+                budget = max(budget // 2, MIN_BUDGET)
+                log.warning("%s rejected the token budget; retrying with max_tokens=%d", model, budget)
 
     def chat(
         self,
@@ -118,11 +150,7 @@ class LLMClient:
         last_finish: str | None = None
 
         for attempt in range(1, attempts + 1):
-            start = time.monotonic()
-            response = self.client.chat.completions.create(
-                model=model, messages=messages, max_tokens=budget, **params
-            )
-            latency = time.monotonic() - start
+            response, budget, latency = self._create(model, messages, budget, params)
 
             choice = response.choices[0] if response.choices else None
             message = choice.message if choice else None

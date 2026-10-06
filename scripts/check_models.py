@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Confirm Nebius Token Factory access and the configured Nemotron model IDs.
+"""Confirm API access and the configured model IDs (Nebius Token Factory by default).
 
 1. Lists the models available to your key via GET /v1/models.
 2. Checks that MODEL_FAST / MODEL_MID / MODEL_REASONING from .env are in that list.
@@ -122,6 +122,7 @@ def main() -> int:
         print(f"Config error: {e}", file=sys.stderr)
         return 2
 
+    print(f"Provider:   {settings.provider_label} (LLM_PROVIDER={settings.provider})")
     print(f"Base URL:   {settings.base_url}")
     print(f"API key:    {mask(settings.api_key)}")
     print(f"max_tokens: {settings.max_tokens} (cap on retry: {settings.max_tokens_cap})")

@@ -5,6 +5,7 @@ real containers with the default image-building sandbox factory.
 """
 
 import json
+import re
 
 import pytest
 
@@ -34,6 +35,11 @@ REGRESSING_EDIT = "Root cause.\n" + edit(
     "    if x > hi:\n        return lo\n", "    if x > hi:\n        return hi\n")
 
 
+def rejected_attempt(text):
+    m = re.search(r"rejected attempt (\d+)", text)
+    return int(m.group(1)) if m else 0
+
+
 def happy_responder(model, messages):
     first, last = first_user(messages), last_user(messages)
     if "Summarize this GitHub issue" in first:
@@ -48,9 +54,11 @@ def happy_responder(model, messages):
     if "extra pytest tests" in first:
         return f"```python\n{HELDOUT}```"
     if "Fix this bug." in first:
-        replies = [STALE_EDIT, REGRESSING_EDIT, '<read_file path="calc.py"/>', GOOD_EDIT]
-        n = sum(1 for m in messages if m["role"] == "assistant")
-        return replies[min(n, len(replies) - 1)]
+        # Decide from what the model can see (earlier turns may be compacted away).
+        if "Now reply with the root cause" in last:
+            return GOOD_EDIT
+        replies = [STALE_EDIT, REGRESSING_EDIT, '<read_file path="calc.py"/>']
+        return replies[min(rejected_attempt(last), len(replies) - 1)]
     if "summary section of a pull request" in first:
         return "`clamp` returned `lo` for values above the range.\n\nIt now returns `hi`."
     raise AssertionError(f"unexpected prompt: {first[:200]}")
@@ -169,8 +177,7 @@ def test_heldout_gate_rejects_special_cased_fix(tmp_path, toy):
 
     def responder(model, messages):
         if "Fix this bug." in first_user(messages):
-            n = sum(1 for m in messages if m["role"] == "assistant")
-            return special if n == 0 else GOOD_EDIT
+            return special if rejected_attempt(last_user(messages)) == 0 else GOOD_EDIT
         return happy_responder(model, messages)
 
     result, _, _ = run_agent(tmp_path, toy, responder, heldout_mode="gate")

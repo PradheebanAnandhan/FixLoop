@@ -67,7 +67,7 @@ def run(tmp_path, base_url, *args, key="good-key-123456", fast="nvidia/nano"):
         f"NEBIUS_API_KEY={key}\nNEBIUS_BASE_URL={base_url}\n"
         f"MODEL_FAST={fast}\nMODEL_MID=nvidia/super\nMODEL_REASONING=nvidia/ultra\n"
     )
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("NEBIUS_", "MODEL_"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("NEBIUS_", "MODEL_", "LLM_", "GROQ_", "NVIDIA_", "OPENROUTER_"))}
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--env-file", str(env_file), *args],
@@ -105,10 +105,10 @@ def test_bad_key(tmp_path, stub_url):
 def test_missing_config(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("NEBIUS_API_KEY=x\n")
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("NEBIUS_", "MODEL_"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("NEBIUS_", "MODEL_", "LLM_", "GROQ_", "NVIDIA_", "OPENROUTER_"))}
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--env-file", str(env_file)],
         capture_output=True, text=True, env=env, timeout=60,
     )
     assert result.returncode == 2
-    assert "NEBIUS_BASE_URL" in result.stderr and "MODEL_FAST" in result.stderr
+    assert "MODEL_FAST" in result.stderr and "NEBIUS_API_KEY" not in result.stderr

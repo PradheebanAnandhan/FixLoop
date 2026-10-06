@@ -133,6 +133,20 @@ Verify your connection and model IDs:
 python scripts/check_models.py
 ```
 
+#### Developing without Token Factory credits
+
+FixLoop talks to any OpenAI-compatible API, so you can develop against a free provider and switch back for the final runs by changing `.env` only:
+
+```ini
+LLM_PROVIDER=nvidia        # nebius (default) | nvidia | groq | openrouter | custom
+NVIDIA_API_KEY=...
+MODEL_FAST=...             # pick IDs from `python scripts/check_models.py`
+MODEL_MID=...
+MODEL_REASONING=...
+```
+
+The NVIDIA API Catalog serves Nemotron models with free developer access; Groq and OpenRouter have free tiers with other models. For free tiers FixLoop paces requests, retries rate-limit errors, sends less source code per prompt (`LLM_CONTEXT_CHARS`) and lowers `max_tokens` automatically if a model rejects it. The hackathon results and demo should still come from Nemotron on Token Factory.
+
 ### Run
 
 ```bash

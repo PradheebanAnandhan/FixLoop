@@ -159,7 +159,7 @@ class Agent:
     # -- model helpers ---------------------------------------------------------------
 
     def _ask(self, role: str, messages: list[dict]) -> str:
-        return self.llm.chat(role, messages, **SAMPLING).content
+        return self.llm.chat(role, _compact(messages), **SAMPLING).content
 
     def _ask_json(self, role: str, prompt: str, system: str = prompts.SYSTEM) -> dict | None:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
@@ -314,7 +314,7 @@ class Agent:
 
     def _reproduce(self, issue_text, summary, workspace, files, repro_path, verifier, result) -> tuple[TestFile, str]:
         example = repo_mod.example_test(workspace, [repo_mod.module_name(f) for f in files])
-        context = prompts.files_context(workspace, files)
+        context = prompts.files_context(workspace, files, self.settings.context_chars)
         messages = [{"role": "system", "content": prompts.SYSTEM},
                     {"role": "user", "content": prompts.reproduce(issue_text, summary, context, example, repro_path)}]
         last_feedback = ""
@@ -348,7 +348,7 @@ class Agent:
         path = self._free_path(workspace, test_dir, "test_fixloop_heldout.py")
         messages = [{"role": "system", "content": prompts.SYSTEM},
                     {"role": "user", "content": prompts.heldout(
-                        summary, repro.content, prompts.files_context(workspace, files), path)}]
+                        summary, repro.content, prompts.files_context(workspace, files, self.settings.context_chars), path)}]
         code = prompts.extract_code(self._ask("fast", messages))
         if not code:
             self.emit("heldout", "info", "no held-out tests produced; continuing without them")
@@ -363,7 +363,7 @@ class Agent:
         messages = [
             {"role": "system", "content": prompts.FIX_SYSTEM},
             {"role": "user", "content": prompts.fix(issue_text, summary, repro.path, repro.content, failure,
-                                                    prompts.files_context(workspace, files))},
+                                                    prompts.files_context(workspace, files, self.settings.context_chars))},
         ]
         reads_left = MAX_READ_REQUESTS
         while len(result.fix_attempts) < self.settings.max_fix_attempts:
@@ -426,6 +426,20 @@ class Agent:
                 r["cost_usd"] = round((r["prompt_tokens"] * pin + r["completion_tokens"] * pout) / 1e6, 6)
                 total_cost += r["cost_usd"]
         return {"by_role": by_role, "cost_usd": round(total_cost, 6) if priced else None}
+
+
+def _compact(messages: list[dict], keep_last: int = 4) -> list[dict]:
+    """System prompt + task + only the latest exchanges, so retries don't grow the prompt
+    without bound (matters on free tiers with tokens-per-minute limits)."""
+    if len(messages) <= 2 + keep_last:
+        return messages
+    tail = messages[-keep_last:]
+    if tail[0]["role"] == "user":  # keep strict user/assistant alternation
+        tail = tail[1:]
+    dropped = len(messages) - 2 - len(tail)
+    task = dict(messages[1])
+    task["content"] += f"\n\n[{dropped} earlier messages omitted; your latest attempt and its feedback follow.]"
+    return [messages[0], task] + tail
 
 
 def _failure_text(check: Baseline, repro_path: str) -> str:
